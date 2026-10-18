@@ -4,6 +4,7 @@ import os
 import tempfile
 
 import joblib
+from huggingface_hub import hf_hub_download
 import lasio
 import numpy as np
 import pandas as pd
@@ -30,6 +31,10 @@ MODEL_DIR = PROJECT_DIR / "models"
 
 # Gunakan nama baru agar file lama tetap aman.
 MODEL_PATH = MODEL_DIR / "lithology_model_v2.joblib"
+
+# Model publik yang digunakan saat aplikasi berjalan di cloud.
+HF_REPO_ID = "adzimasena/geosens-lithology-model"
+HF_FILENAME = "lithology_model_v2.joblib"
 
 LABEL_CURVE = "FORCE_2020_LITHOFACIES_LITHOLOGY"
 
@@ -185,10 +190,19 @@ def load_las_dataset(data_dir=DATA_DIR):
 # =========================================================
 
 def load_saved_model(model_path=MODEL_PATH):
+    """Memuat model lokal; jika tidak ada, unduh dari Hugging Face."""
     model_path = Path(model_path)
 
     if not model_path.is_file():
-        return None
+        # Jangan mengunduh model saat memvalidasi file sementara hasil training.
+        if model_path != MODEL_PATH:
+            return None
+
+        downloaded_path = hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=HF_FILENAME,
+        )
+        model_path = Path(downloaded_path)
 
     saved = joblib.load(model_path)
 
@@ -224,21 +238,28 @@ def load_saved_model(model_path=MODEL_PATH):
 def train_lithology_model(data_dir=DATA_DIR):
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Coba memuat model versi baru.
-    if MODEL_PATH.exists():
-        try:
-            saved = load_saved_model(MODEL_PATH)
+    # Prioritaskan model lokal atau model publik di Hugging Face.
+    try:
+        saved = load_saved_model(MODEL_PATH)
 
-            if saved is not None:
-                model, features, metrics = saved
-                return model, features, pd.DataFrame(), metrics
+        if saved is not None:
+            model, features, metrics = saved
+            return model, features, pd.DataFrame(), metrics
 
-        except Exception as exc:
-            print(
-                f"Model versi baru gagal dimuat: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            print("Model baru akan dilatih ulang.")
+    except Exception as exc:
+        # Jika dataset lokal tersedia, tetap izinkan training lokal.
+        if not Path(data_dir).expanduser().is_dir():
+            raise RuntimeError(
+                "Model litologi tidak dapat dimuat dari Hugging Face. "
+                "Pastikan repository dan file model tersedia, serta "
+                "versi scikit-learn kompatibel."
+            ) from exc
+
+        print(
+            f"Model tersimpan gagal dimuat: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        print("Dataset lokal ditemukan; mencoba melatih model ulang.")
 
     # Baca dataset.
     data, features = load_las_dataset(data_dir)
